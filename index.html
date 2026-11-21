@@ -1,0 +1,325 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three Bridges Library Scanner</title>
+<style>
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: #eaf4f9;
+    color: #103653;
+    font-family: Arial, sans-serif;
+    text-align: center;
+  }
+
+  header {
+    background: #164a78;
+    color: white;
+    padding: 20px;
+  }
+
+  h1 { margin: 0; font-size: 24px; }
+  header p { margin: 8px 0 0; }
+
+  main {
+    max-width: 650px;
+    margin: 20px auto;
+    padding: 16px;
+  }
+
+  .camera {
+    background: #102a3c;
+    border-radius: 16px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  video {
+    width: 100%;
+    display: block;
+    min-height: 240px;
+    object-fit: cover;
+  }
+
+  .target {
+    position: absolute;
+    inset: 25%;
+    border: 3px solid #59e1c9;
+    border-radius: 12px;
+    pointer-events: none;
+  }
+
+  button {
+    background: #008f91;
+    color: white;
+    border: none;
+    padding: 15px 24px;
+    border-radius: 12px;
+    font-size: 17px;
+    font-weight: bold;
+    margin: 12px 4px;
+    cursor: pointer;
+  }
+
+  button:disabled {
+    opacity: .5;
+    cursor: default;
+  }
+
+  .result {
+    background: white;
+    border-radius: 14px;
+    padding: 22px;
+    margin-top: 18px;
+    min-height: 130px;
+  }
+
+  .result strong {
+    display: block;
+    font-size: 22px;
+    margin: 8px 0;
+    overflow-wrap: anywhere;
+  }
+
+  .success { color: #087b60; }
+  .error { color: #a72d36; }
+
+  .history {
+    text-align: left;
+    background: white;
+    padding: 16px;
+    border-radius: 12px;
+    margin-top: 18px;
+  }
+
+  .history li { margin: 8px 0; }
+
+  #status { margin: 12px 0; }
+</style>
+</head>
+
+<body>
+<header>
+  <h1>Three Bridges Library</h1>
+  <p>Camera Scanner — Test Mode</p>
+</header>
+
+<main>
+  <div class="camera">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="target"></div>
+  </div>
+
+  <p id="status">Camera not started</p>
+
+  <button id="startButton" onclick="startScanner()">
+    Start Camera
+  </button>
+  <button onclick="stopScanner()">Stop</button>
+
+  <div class="result" aria-live="polite">
+    <div id="resultType">Ready to scan</div>
+    <strong id="resultCode">—</strong>
+    <div id="resultMessage">
+      Scan a pupil barcode or a book ISBN.
+    </div>
+  </div>
+
+  <div class="history">
+    <strong>Recent scans</strong>
+    <ol id="history"></ol>
+  </div>
+</main>
+
+<script>
+const video = document.getElementById('video');
+const statusText = document.getElementById('status');
+const resultType = document.getElementById('resultType');
+const resultCode = document.getElementById('resultCode');
+const resultMessage = document.getElementById('resultMessage');
+
+let stream = null;
+let detector = null;
+let running = false;
+let audioContext = null;
+let lastCode = '';
+let lastSeen = 0;
+let lastAccepted = 0;
+
+function beep(success = true) {
+  if (!audioContext) return;
+
+  const now = audioContext.currentTime;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(
+    success ? 880 : 260, now
+  );
+
+  gain.gain.setValueAtTime(0.13, now);
+  gain.gain.exponentialRampToValueAtTime(
+    0.001, now + 0.13
+  );
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+
+  oscillator.start(now);
+  oscillator.stop(now + 0.13);
+}
+
+function classify(code) {
+  if (/^TBP-[A-Z0-9]{10}$/.test(code)) {
+    return 'Pupil barcode';
+  }
+
+  if (/^\d{13}$/.test(code)) {
+    return 'Book ISBN-13 / EAN-13';
+  }
+
+  if (/^\d{9}[\dX]$/.test(code)) {
+    return 'Possible ISBN-10';
+  }
+
+  return 'Other barcode';
+}
+
+function showScan(code) {
+  const type = classify(code);
+
+  resultType.textContent = type;
+  resultCode.textContent = code;
+  resultMessage.textContent = 'Barcode recognised!';
+  resultMessage.className = 'success';
+
+  beep(true);
+
+  const item = document.createElement('li');
+  item.textContent = type + ': ' + code;
+
+  const history = document.getElementById('history');
+  history.prepend(item);
+
+  while (history.children.length > 8) {
+    history.lastChild.remove();
+  }
+}
+
+async function startScanner() {
+  if (running) return;
+
+  const button = document.getElementById('startButton');
+  button.disabled = true;
+
+  try {
+    if (!('BarcodeDetector' in window)) {
+      throw new Error(
+        'This browser does not support the camera barcode detector.'
+      );
+    }
+
+    const formats = await BarcodeDetector.getSupportedFormats();
+
+    if (!formats.includes('code_128') ||
+        !formats.includes('ean_13')) {
+      throw new Error(
+        'This browser cannot read both required barcode formats.'
+      );
+    }
+
+    detector = new BarcodeDetector({
+      formats: ['code_128', 'ean_13']
+    });
+
+    audioContext = new (
+      window.AudioContext || window.webkitAudioContext
+    )();
+
+    await audioContext.resume();
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    });
+
+    video.srcObject = stream;
+    await video.play();
+
+    running = true;
+    lastCode = '';
+    lastSeen = 0;
+    lastAccepted = 0;
+    statusText.textContent = 'Camera active — ready to scan';
+
+    scanLoop();
+
+  } catch (error) {
+    statusText.textContent = error.message;
+    statusText.className = 'error';
+    stopScanner();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function scanLoop() {
+  while (running) {
+    try {
+      const barcodes = await detector.detect(video);
+
+      const now = Date.now();
+      const codes = barcodes.map(b => b.rawValue.trim());
+      const code = codes[0];
+
+      if (code) {
+        const sameCode = code === lastCode;
+
+        if (!sameCode ||
+            (now - lastSeen > 1500 &&
+             now - lastAccepted > 1500)) {
+
+          lastCode = code;
+          lastAccepted = now;
+          showScan(code);
+        }
+
+        lastSeen = now;
+      }
+
+    } catch (error) {
+      console.warn('Scan frame skipped:', error);
+    }
+
+    await new Promise(resolve =>
+      setTimeout(resolve, 150)
+    );
+  }
+}
+
+function stopScanner() {
+  running = false;
+
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+
+  video.srcObject = null;
+
+  if (!statusText.classList.contains('error')) {
+    statusText.textContent = 'Camera stopped';
+  }
+}
+</script>
+</body>
+</html>
