@@ -1,325 +1,60 @@
-
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Three Bridges Library Scanner</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Three Bridges Library — Camera</title>
 <style>
-  * { box-sizing: border-box; }
-
-  body {
-    margin: 0;
-    background: #eaf4f9;
-    color: #103653;
-    font-family: Arial, sans-serif;
-    text-align: center;
-  }
-
-  header {
-    background: #164a78;
-    color: white;
-    padding: 20px;
-  }
-
-  h1 { margin: 0; font-size: 24px; }
-  header p { margin: 8px 0 0; }
-
-  main {
-    max-width: 650px;
-    margin: 20px auto;
-    padding: 16px;
-  }
-
-  .camera {
-    background: #102a3c;
-    border-radius: 16px;
-    overflow: hidden;
-    position: relative;
-  }
-
-  video {
-    width: 100%;
-    display: block;
-    min-height: 240px;
-    object-fit: cover;
-  }
-
-  .target {
-    position: absolute;
-    inset: 25%;
-    border: 3px solid #59e1c9;
-    border-radius: 12px;
-    pointer-events: none;
-  }
-
-  button {
-    background: #008f91;
-    color: white;
-    border: none;
-    padding: 15px 24px;
-    border-radius: 12px;
-    font-size: 17px;
-    font-weight: bold;
-    margin: 12px 4px;
-    cursor: pointer;
-  }
-
-  button:disabled {
-    opacity: .5;
-    cursor: default;
-  }
-
-  .result {
-    background: white;
-    border-radius: 14px;
-    padding: 22px;
-    margin-top: 18px;
-    min-height: 130px;
-  }
-
-  .result strong {
-    display: block;
-    font-size: 22px;
-    margin: 8px 0;
-    overflow-wrap: anywhere;
-  }
-
-  .success { color: #087b60; }
-  .error { color: #a72d36; }
-
-  .history {
-    text-align: left;
-    background: white;
-    padding: 16px;
-    border-radius: 12px;
-    margin-top: 18px;
-  }
-
-  .history li { margin: 8px 0; }
-
-  #status { margin: 12px 0; }
-</style>
-</head>
-
-<body>
-<header>
-  <h1>Three Bridges Library</h1>
-  <p>Camera Scanner — Test Mode</p>
-</header>
-
-<main>
-  <div class="camera">
-    <video id="video" autoplay playsinline muted></video>
-    <div class="target"></div>
-  </div>
-
-  <p id="status">Camera not started</p>
-
-  <button id="startButton" onclick="startScanner()">
-    Start Camera
-  </button>
-  <button onclick="stopScanner()">Stop</button>
-
-  <div class="result" aria-live="polite">
-    <div id="resultType">Ready to scan</div>
-    <strong id="resultCode">—</strong>
-    <div id="resultMessage">
-      Scan a pupil barcode or a book ISBN.
-    </div>
-  </div>
-
-  <div class="history">
-    <strong>Recent scans</strong>
-    <ol id="history"></ol>
-  </div>
-</main>
-
+:root{font-family:Montserrat,Arial,sans-serif;color:#173e60;background:#eaf4f9}*{box-sizing:border-box}
+body{margin:0;padding:18px;max-width:650px;margin-inline:auto}header{text-align:center}h1{font-size:24px}
+video{display:block;width:100%;max-height:58vh;object-fit:cover;background:#112d43;border-radius:15px}
+button{width:100%;padding:16px;background:#008f91;border:0;border-radius:12px;color:white;font:700 17px inherit;margin:12px 0;cursor:pointer}
+.panel{background:white;border-radius:15px;padding:16px;margin-top:12px;box-shadow:0 2px 10px #1233}
+#code{overflow-wrap:anywhere;font-size:19px;font-weight:700}#status{font-weight:600}small{color:#52697b}
+</style></head><body>
+<header><h1>📚 Three Bridges Library</h1><p>Camera barcode scanner</p></header>
+<video id="video" playsinline muted></video>
+<button id="start">Start camera</button>
+<div class="panel"><div id="status">Open this scanner from the library app.</div><p id="code"></p><small id="help">Keep the library app open in the other window. Choose Borrow, Return, Find a Book or Catalogue there.</small></div>
 <script>
-const video = document.getElementById('video');
-const statusText = document.getElementById('status');
-const resultType = document.getElementById('resultType');
-const resultCode = document.getElementById('resultCode');
-const resultMessage = document.getElementById('resultMessage');
-
-let stream = null;
-let detector = null;
-let running = false;
-let audioContext = null;
-let lastCode = '';
-let lastSeen = 0;
-let lastAccepted = 0;
-
-function beep(success = true) {
-  if (!audioContext) return;
-
-  const now = audioContext.currentTime;
-  const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
-
-  oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(
-    success ? 880 : 260, now
-  );
-
-  gain.gain.setValueAtTime(0.5, now);
-  gain.gain.exponentialRampToValueAtTime(
-    0.001, now + 0.13
-  );
-
-  oscillator.connect(gain);
-  gain.connect(audioContext.destination);
-
-  oscillator.start(now);
-  oscillator.stop(now + 0.13);
+const video=document.getElementById('video');
+const statusEl=document.getElementById('status');
+const codeEl=document.getElementById('code');
+const startBtn=document.getElementById('start');
+const session=new URLSearchParams(location.hash.slice(1)).get('session');
+// Never expose pupil names, loan records or credentials on this public page.
+let detector,stream,running=false,waiting=false,lastCode='',lastAt=0,audioContext;
+function beep(ok=true){try{audioContext ||= new (window.AudioContext||window.webkitAudioContext)();const o=audioContext.createOscillator(),g=audioContext.createGain(),t=audioContext.currentTime;o.type='sine';o.frequency.value=ok?880:260;g.gain.setValueAtTime(.45,t);g.gain.exponentialRampToValueAtTime(.001,t+.13);o.connect(g);g.connect(audioContext.destination);o.start(t);o.stop(t+.13)}catch(e){}}
+window.addEventListener('message',event=>{
+ if(event.source!==window.opener || !event.data || event.data.app!=='TB_LIBRARY_ACK' || event.data.session!==session)return;
+ waiting=false;
+ if(event.data.status==='ok'){statusEl.textContent='✓ Sent to library';beep(true)}
+ else if(event.data.status==='busy'){statusEl.textContent='Library is processing. Try again.'}
+ else {statusEl.textContent='Library reported a problem. Check the other window.';beep(false)}
+});
+async function start(){
+ if(!window.opener||!session){statusEl.textContent='Please open this page using Open Camera Scanner in the library app.';return}
+ if(!('BarcodeDetector' in window)){statusEl.textContent='This browser does not support camera barcode detection. Use a compatible Chrome browser.';return}
+ try{
+  detector=new BarcodeDetector({formats:['ean_13','code_128']});
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});
+  video.srcObject=stream;await video.play();running=true;startBtn.textContent='Stop camera';statusEl.textContent='Ready to scan';scanLoop();
+ }catch(e){statusEl.textContent='Could not start camera: '+e.message}
 }
-
-function classify(code) {
-  if (/^TBP-[A-Z0-9]{10}$/.test(code)) {
-    return 'Pupil barcode';
-  }
-
-  if (/^\d{13}$/.test(code)) {
-    return 'Book ISBN-13 / EAN-13';
-  }
-
-  if (/^\d{9}[\dX]$/.test(code)) {
-    return 'Possible ISBN-10';
-  }
-
-  return 'Other barcode';
+function stop(){running=false;stream?.getTracks().forEach(t=>t.stop());video.srcObject=null;startBtn.textContent='Start camera'}
+async function scanLoop(){
+ while(running){
+  try{
+   const codes=await detector.detect(video);
+   const code=codes.map(x=>String(x.rawValue||'').trim()).find(x=>/^(?:TBP-[A-Z0-9]{10}|\d{13}|\d{9}[\dX])$/.test(x));
+   const now=Date.now();
+   if(code && !waiting && (code!==lastCode || now-lastAt>2300)){
+    lastCode=code;lastAt=now;waiting=true;codeEl.textContent=code;statusEl.textContent='Sending scan...';
+    window.opener.postMessage({app:'TB_LIBRARY_SCANNER',session,type:'scan',code},'*');
+    // If the library window is gone, don't freeze the scanner forever.
+    setTimeout(()=>{if(waiting){waiting=false;statusEl.textContent='No reply from library. Check that its window is open.'}},12000);
+   }
+  }catch(e){statusEl.textContent='Scanning error: '+e.message}
+  await new Promise(resolve=>setTimeout(resolve,160));
+ }
 }
-
-function showScan(code) {
-  const type = classify(code);
-
-  resultType.textContent = type;
-  resultCode.textContent = code;
-  resultMessage.textContent = 'Barcode recognised!';
-  resultMessage.className = 'success';
-
-  beep(true);
-
-  const item = document.createElement('li');
-  item.textContent = type + ': ' + code;
-
-  const history = document.getElementById('history');
-  history.prepend(item);
-
-  while (history.children.length > 8) {
-    history.lastChild.remove();
-  }
-}
-
-async function startScanner() {
-  if (running) return;
-
-  const button = document.getElementById('startButton');
-  button.disabled = true;
-
-  try {
-    if (!('BarcodeDetector' in window)) {
-      throw new Error(
-        'This browser does not support the camera barcode detector.'
-      );
-    }
-
-    const formats = await BarcodeDetector.getSupportedFormats();
-
-    if (!formats.includes('code_128') ||
-        !formats.includes('ean_13')) {
-      throw new Error(
-        'This browser cannot read both required barcode formats.'
-      );
-    }
-
-    detector = new BarcodeDetector({
-      formats: ['code_128', 'ean_13']
-    });
-
-    audioContext = new (
-      window.AudioContext || window.webkitAudioContext
-    )();
-
-    await audioContext.resume();
-
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      }
-    });
-
-    video.srcObject = stream;
-    await video.play();
-
-    running = true;
-    lastCode = '';
-    lastSeen = 0;
-    lastAccepted = 0;
-    statusText.textContent = 'Camera active — ready to scan';
-
-    scanLoop();
-
-  } catch (error) {
-    statusText.textContent = error.message;
-    statusText.className = 'error';
-    stopScanner();
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function scanLoop() {
-  while (running) {
-    try {
-      const barcodes = await detector.detect(video);
-
-      const now = Date.now();
-      const codes = barcodes.map(b => b.rawValue.trim());
-      const code = codes[0];
-
-      if (code) {
-        const sameCode = code === lastCode;
-
-        if (!sameCode ||
-            (now - lastSeen > 1500 &&
-             now - lastAccepted > 1500)) {
-
-          lastCode = code;
-          lastAccepted = now;
-          showScan(code);
-        }
-
-        lastSeen = now;
-      }
-
-    } catch (error) {
-      console.warn('Scan frame skipped:', error);
-    }
-
-    await new Promise(resolve =>
-      setTimeout(resolve, 150)
-    );
-  }
-}
-
-function stopScanner() {
-  running = false;
-
-  if (stream) {
-    stream.getTracks().forEach(track => track.stop());
-    stream = null;
-  }
-
-  video.srcObject = null;
-
-  if (!statusText.classList.contains('error')) {
-    statusText.textContent = 'Camera stopped';
-  }
-}
-</script>
-</body>
-</html>
+startBtn.addEventListener('click',()=>running?stop():start());
+window.addEventListener('pagehide',stop);
+</script></body></html>
