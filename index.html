@@ -162,7 +162,7 @@ function beep(success = true) {
     success ? 880 : 260, now
   );
 
-  gain.gain.setValueAtTime(0.13, now);
+  gain.gain.setValueAtTime(0.5, now);
   gain.gain.exponentialRampToValueAtTime(
     0.001, now + 0.13
   );
